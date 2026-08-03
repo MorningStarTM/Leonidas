@@ -83,6 +83,11 @@ class DataFetcher:
         for f in self.list_files(prefix=prefix, suffix=suffix):
             key = f["key"]
             rel = key[len(prefix):] if prefix and key.startswith(prefix) else key
+            # A leading "/" (e.g. prefix given without a trailing slash) would
+            # make Path join treat `rel` as drive-absolute and silently drop
+            # `local_dir` entirely, so strip it. An empty `rel` (key == prefix
+            # exactly) falls back to the key's basename.
+            rel = rel.lstrip("/\\") or os.path.basename(key)
             paths.append(self.download_file(key, local_dir / rel, overwrite=overwrite))
         return paths
 
