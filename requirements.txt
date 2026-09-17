@@ -1,0 +1,21 @@
+numpy
+scipy
+torch
+smplx
+boto3
+python-dotenv
+loguru
+safetensors
+pyyaml
+pytest
+
+# Streamlit mocap viewer app (app/)
+streamlit
+plotly
+pyrender
+trimesh
+PyOpenGL
+c3d
+bvh
+opencv-python
+mediapipe
