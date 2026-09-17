@@ -86,17 +86,46 @@ export LEONIDAS_SMPLX_MODEL=/path/to/SMPLX_FEMALE.npz
 streamlit run app/streamlit_app.py
 ```
 
-- **Tab 1 — Raw Mocap**: the data exactly as the source format measured it.
-  `.npz` params are shown as a skeleton (direct forward kinematics, no
-  fitting). `.c3d` markers are shown as a raw point cloud. `.bvh` files are
-  shown as a skeleton using the file's own bone hierarchy. Video is run
-  through MediaPipe Pose to extract real 3D world-landmark mocap, shown as
-  a skeleton. Unobserved points are drawn in red, never hidden.
+- **Tab 1 — Raw Mocap**: the data exactly as the source format measured it,
+  always the *complete* clip (see "Frame budgets" below) — `.npz` params
+  are shown as a skeleton (direct forward kinematics, no fitting). `.c3d`
+  markers are shown as a raw point cloud. `.bvh` files are shown as a
+  skeleton using the file's own bone hierarchy. Video is run through
+  MediaPipe Pose to extract real 3D world-landmark mocap, shown as a
+  skeleton. Unobserved points are drawn in red, never hidden. Playback is
+  a native Plotly animation — the browser drives it, not the Python
+  backend, so the page stays scrollable and interactive while it plays.
 - **Tab 2 — SMPL-X Fit**: the same clip unified onto the real SMPL-X mesh
-  and rendered with `pyrender` (a genuine lit, shaded 3D render, orbit
-  controls in the sidebar), plus the `FitQuality` verdict (GOOD/DEGRADED/
-  REJECT) and the fitting notes (e.g. how many C3D markers or BVH joints
-  matched a known naming convention, or that hands are shown at rest).
+  and rendered with `pyrender` (a genuine lit, shaded 3D render), plus the
+  `FitQuality` verdict (GOOD/DEGRADED/REJECT) and the fitting notes (e.g.
+  how many C3D markers or BVH joints matched a known naming convention, or
+  that hands are shown at rest). Every frame is pre-rendered once and
+  handed to a small client-side HTML/JS player with its own Play/Pause/
+  scrub/Fullscreen controls — same reasoning as the raw tab's animation:
+  no Python execution drives playback, so scrolling and its own dedicated
+  Fullscreen button both work normally while it plays.
+
+### Frame budgets
+
+The Raw Mocap tab always shows the **complete** clip for every format
+except video — there is no cost to displaying more raw points, so
+truncating it would only hide part of the "as it is" mocap for no reason
+(a real bug this project shipped and then fixed: a fixed 200-frame — or,
+at one point, a 30-frame default — cap silently truncated real captures
+that ran several hundred frames, making the "full simulation" invisible).
+
+Only the **SMPL-X Fit tab** has a frame budget (`max_fit_frames`, a
+sidebar slider, default 60): fitting is an iterative optimization and mesh
+rendering runs once per frame, so both have a real per-frame cost. A clip
+longer than the budget is **evenly subsampled across its entire duration**
+(`app/pipeline.py::_fit_frame_selection`), not truncated to its opening
+frames — so the fit tab still previews the whole motion, just at a lower
+frame density for longer clips.
+
+Video uploads have one additional, unavoidable cap (`max_extract_frames`,
+also a sidebar slider): MediaPipe runs a neural network on every extracted
+frame, so — unlike the other formats — the raw tab for video can only ever
+show however many frames were actually extracted.
 
 `.npz` params need no fitting (Tier 0, pure conversion). `.c3d` markers fit
 via `adapters/markers.py`'s `VICON_50` vertex-correspondence layout (built
