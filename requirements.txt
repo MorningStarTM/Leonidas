@@ -19,3 +19,4 @@ c3d
 bvh
 opencv-python
 mediapipe
+gdown

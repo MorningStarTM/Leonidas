@@ -25,6 +25,7 @@ if str(_REPO_ROOT) not in sys.path:
 import numpy as np
 import streamlit as st
 
+from app.model_bootstrap import ensure_smplx_model_downloaded
 from app.pipeline import UnsupportedFileError, process_upload
 from app.render3d import build_mesh_player_threejs, compute_axis_bounds, plot_points_animation
 from src.smplx.config import SMPLXModelNotFoundError, find_smplx_model
@@ -140,6 +141,7 @@ def main():
     st.caption("Upload mocap data (.npz SMPL/SMPL-H/SMPL-X params, .c3d optical markers, .bvh skeleton animation, "
                "or a video) to compare it raw against a unified SMPL-X fit.")
 
+    ensure_smplx_model_downloaded()
     model_path = find_smplx_model()
     if model_path is None:
         st.error(
