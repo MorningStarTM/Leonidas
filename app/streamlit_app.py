@@ -6,7 +6,8 @@ or a video) and see it two ways:
   1. Raw Mocap  — the data exactly as the source format measured it
      (parametric skeleton, marker cloud, or MediaPipe 3D landmarks).
   2. SMPL-X Fit — the same clip unified onto the real SMPL-X body model
-     and rendered as a full 3D mesh via pyrender.
+     and rendered in an interactive, mouse-orbitable 3D viewport (three.js)
+     with a static ground plane.
 
 Run with:  streamlit run app/streamlit_app.py
 """
@@ -25,7 +26,7 @@ import numpy as np
 import streamlit as st
 
 from app.pipeline import UnsupportedFileError, process_upload
-from app.render3d import build_mesh_player_html, compute_axis_bounds, plot_points_animation, render_mesh_frame
+from app.render3d import build_mesh_player_threejs, compute_axis_bounds, plot_points_animation
 from src.smplx.config import SMPLXModelNotFoundError, find_smplx_model
 from src.smplx.fitting.body import BodyParams, SMPLXBody
 
@@ -47,28 +48,15 @@ def cached_process_upload(_body, file_bytes: bytes, filename: str, max_fit_frame
                            max_fit_frames=max_fit_frames, max_extract_frames=max_extract_frames)
 
 
-@st.cache_data(show_spinner="Rendering SMPL-X mesh frames...")
-def cached_mesh_frames_png(vertices_bytes, faces_bytes, shape, azimuth, elevation, size):
-    """Pre-render every frame's mesh to PNG bytes, once. This is the only
-    Python-side work the SMPL-X Fit tab's animation needs — after this,
-    `build_mesh_player_html` hands the results to a client-side player
-    that needs no further Python execution to advance frames (see that
-    function's docstring for why that matters)."""
-    import io
-
-    from PIL import Image
-
+@st.cache_data(show_spinner="Preparing SMPL-X mesh viewer...")
+def cached_mesh_player_html(vertices_bytes, faces_bytes, shape, fps, width, height):
+    """Build the interactive three.js viewer's HTML once per (clip, size).
+    Unlike the earlier pyrender-based player, no server-side rendering
+    happens here at all — the vertex data is just serialized for the
+    browser's own WebGL renderer to draw and let the user orbit freely."""
     all_vertices = np.frombuffer(vertices_bytes, dtype=np.float64).reshape(shape)
     faces = np.frombuffer(faces_bytes, dtype=np.int64).reshape(-1, 3)
-
-    pngs = []
-    for verts in all_vertices:
-        img = render_mesh_frame(verts, faces, azimuth_deg=azimuth, elevation_deg=elevation,
-                                 distance=None, image_size=(size, size))
-        buf = io.BytesIO()
-        Image.fromarray(img).save(buf, format="PNG")
-        pngs.append(buf.getvalue())
-    return pngs
+    return build_mesh_player_threejs(all_vertices, faces, fps=fps, width=width, height=height)
 
 
 def render_raw_tab(raw):
@@ -119,10 +107,9 @@ def render_fit_tab(fit, body):
                    "to fit real hand articulation (see src/smplx/README.md).")
 
     with st.expander("Render settings"):
-        c1, c2, c3 = st.columns(3)
-        azimuth = c1.slider("Azimuth", -180, 180, 20, key="mesh_azimuth")
-        elevation = c2.slider("Elevation", -60, 60, 10, key="mesh_elevation")
-        size = c3.select_slider("Resolution", options=[256, 384, 480, 640], value=384, key="mesh_size")
+        c1, c2 = st.columns(2)
+        width = c1.select_slider("Viewport width", options=[480, 560, 640, 720, 860], value=640, key="mesh_width")
+        height = c2.select_slider("Viewport height", options=[360, 420, 480, 540, 640], value=480, key="mesh_height")
 
     import torch
     t = fit.motion.num_frames
@@ -136,20 +123,16 @@ def render_fit_tab(fit, body):
     all_vertices = out.vertices.numpy()
     faces = body.layer.faces.astype(np.int64)
 
-    try:
-        # Every frame is rendered once (cached) and handed to a small
-        # client-side HTML/JS player with its own Play/Pause/scrub/
-        # Fullscreen controls — see build_mesh_player_html's docstring for
-        # why this, rather than a Python-driven per-frame loop, is what
-        # fixes scrolling and fullscreen during playback.
-        pngs = cached_mesh_frames_png(
-            all_vertices.tobytes(), faces.tobytes(), all_vertices.shape,
-            float(azimuth), float(elevation), int(size),
-        )
-        html = build_mesh_player_html(pngs, fps=fit.motion.fps, width=size, height=size)
-        st.components.v1.html(html, height=size + 90, scrolling=False)
-    except RuntimeError as e:
-        st.error(str(e))
+    # The mesh geometry itself (not a pre-rendered image) is handed to a
+    # client-side three.js viewport: drag-to-orbit, scroll-to-zoom, a
+    # static ground grid, and its own Play/Pause/scrub/Fullscreen controls
+    # — see build_mesh_player_threejs's docstring for why this replaces
+    # the earlier fixed-angle pyrender player.
+    html = cached_mesh_player_html(
+        all_vertices.tobytes(), faces.tobytes(), all_vertices.shape,
+        float(fit.motion.fps), int(width), int(height),
+    )
+    st.components.v1.html(html, height=height + 110, scrolling=False)
 
 
 def main():

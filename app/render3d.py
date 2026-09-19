@@ -578,3 +578,251 @@ def build_mesh_player_html(images_png: List[bytes], fps: float, width: int, heig
 }})();
 </script>
 """
+
+
+# ---------------------------------------------------------------------------
+# Interactive client-side viewer (three.js): real mouse-orbit camera, a
+# static ground plane, and the mesh geometry itself streamed to the browser
+# instead of being pre-rendered to flat images server-side.
+# ---------------------------------------------------------------------------
+def build_mesh_player_threejs(
+    vertices_seq: np.ndarray,
+    faces: np.ndarray,
+    fps: float,
+    up_axis: str = "z",
+    width: int = 700,
+    height: int = 560,
+    mesh_color: Tuple[float, float, float] = (0.65, 0.74, 0.86),
+) -> str:
+    """A self-contained three.js viewport for an animated SMPL-X mesh:
+    drag-to-orbit / scroll-to-zoom / right-drag-to-pan camera (three.js
+    `OrbitControls`) plus a fixed ground grid, Play/Pause/scrub/Fullscreen
+    controls, and a Reset View button.
+
+    Why this replaces the pyrender-based player for the app's SMPL-X tab:
+    `render_mesh_frame`/`build_mesh_player_html` pre-bake one fixed camera
+    angle (an azimuth/elevation slider set once, server-side) into flat
+    PNGs, so the only way to "look around" was re-rendering every frame on
+    the Python side from a new angle — there is no way to make that feel
+    like a game/engine viewport where the *user's mouse* orbits the camera
+    in real time. Sending the actual mesh geometry to the browser once and
+    letting three.js's own WebGL renderer + OrbitControls handle the
+    camera gives real, continuous mouse-driven orbiting with no server
+    round-trip, plus a ground plane that is a real static object in the
+    scene (so orbiting the camera around the character never "rotates the
+    environment" the way re-rendering from a new azimuth could look like).
+
+    `render_mesh_frame`/`build_mesh_player_html` are kept as-is (still
+    tested, still a valid offline/no-WebGL fallback) — this is an
+    additional, not a replacement, capability.
+
+    `up_axis`: which axis is "up" for `vertices_seq` (see
+    `render_mesh_frame`'s docstring for why this pipeline's fitted data is
+    Z-up). three.js's own convention is Y-up, so z-up vertices are rotated
+    once here via the same proper (determinant +1) rotation used
+    everywhere else in this project (`src.smplx.ops.convert_up_axis`) —
+    never a single-axis sign flip, which would mirror left/right.
+    """
+    import base64
+
+    from src.smplx.ops import convert_up_axis
+
+    if up_axis not in ("y", "z"):
+        raise ValueError(f"up_axis must be 'y' or 'z', got {up_axis!r}")
+
+    v = np.asarray(vertices_seq, dtype=np.float32)
+    if up_axis == "z":
+        v = convert_up_axis(v, "z", "y").astype(np.float32)
+    t = int(v.shape[0])
+    n_verts = int(v.shape[1]) if t > 0 else 0
+    faces_u32 = np.asarray(faces, dtype=np.uint32)
+
+    if t > 0:
+        flat = v.reshape(-1, 3)
+        lo, hi = flat.min(axis=0), flat.max(axis=0)
+        center = ((lo + hi) / 2).tolist()
+        ground_y = float(lo[1])
+        extent = float(np.linalg.norm(hi - lo))
+    else:
+        center = [0.0, 0.0, 0.0]
+        ground_y = 0.0
+        extent = 1.0
+    ground_size = max(extent * 3.0, 2.0)
+    distance = max(extent * 1.8, 1.5)
+
+    verts_b64 = base64.b64encode(v.tobytes()).decode("ascii")
+    faces_b64 = base64.b64encode(faces_u32.tobytes()).decode("ascii")
+    r, g, b = (int(max(0.0, min(1.0, c)) * 255) for c in mesh_color)
+    color_hex = f"0x{r:02x}{g:02x}{b:02x}"
+    interval_ms = int(1000.0 / max(fps, 1.0))
+    cx, cy, cz = center
+
+    return f"""
+<div id="tjs-root" style="font-family:sans-serif;background:#f5f5f7;border-radius:8px;padding:10px;">
+  <div id="tjs-stage" style="width:{width}px;height:{height}px;margin:0 auto;
+       background:#e9ebee;border-radius:6px;overflow:hidden;line-height:0;"></div>
+  <div style="display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap;">
+    <button id="tjs-play" style="padding:4px 12px;cursor:pointer;">&#9654; Play</button>
+    <button id="tjs-pause" style="padding:4px 12px;cursor:pointer;" disabled>&#9208; Pause</button>
+    <button id="tjs-reset" style="padding:4px 12px;cursor:pointer;">&#8635; Reset View</button>
+    <button id="tjs-full" style="padding:4px 12px;cursor:pointer;">&#x26F6; Fullscreen</button>
+    <input id="tjs-slider" type="range" min="0" max="{max(t - 1, 0)}" value="0"
+           style="flex:1;min-width:120px;" />
+    <span id="tjs-label" style="min-width:70px;text-align:right;font-size:0.85em;color:#444;">
+      1 / {t}
+    </span>
+  </div>
+  <div style="font-size:0.78em;color:#777;margin-top:4px;">
+    Drag to orbit &middot; scroll to zoom &middot; right-drag (or two-finger drag) to pan
+  </div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+(function() {{
+  const nVerts = {n_verts};
+  const nFrames = {t};
+  const width = {width};
+  const height = {height};
+  const groundY = {ground_y};
+  const groundSize = {ground_size};
+  const distance = {distance};
+  const center = new THREE.Vector3({cx}, {cy}, {cz});
+  const interval = {interval_ms};
+
+  function b64ToBuffer(b64) {{
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) {{ bytes[i] = bin.charCodeAt(i); }}
+    return bytes.buffer;
+  }}
+  const allVerts = new Float32Array(b64ToBuffer("{verts_b64}"));
+  const faces = new Uint32Array(b64ToBuffer("{faces_b64}"));
+
+  const stage = document.getElementById("tjs-stage");
+  const slider = document.getElementById("tjs-slider");
+  const label = document.getElementById("tjs-label");
+  const playBtn = document.getElementById("tjs-play");
+  const pauseBtn = document.getElementById("tjs-pause");
+  const resetBtn = document.getElementById("tjs-reset");
+  const fullBtn = document.getElementById("tjs-full");
+  const root = document.getElementById("tjs-root");
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0xe9ebee);
+
+  const camera = new THREE.PerspectiveCamera(45, width / height, 0.05, 1000);
+  function defaultCameraPos() {{
+    return new THREE.Vector3(
+      center.x + distance * 0.7, center.y + distance * 0.55, center.z + distance * 0.9
+    );
+  }}
+  camera.position.copy(defaultCameraPos());
+
+  const renderer = new THREE.WebGLRenderer({{antialias: true}});
+  renderer.setSize(width, height);
+  renderer.shadowMap.enabled = true;
+  stage.appendChild(renderer.domElement);
+
+  const controls = new THREE.OrbitControls(camera, renderer.domElement);
+  controls.target.copy(center);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.minDistance = distance * 0.1;
+  controls.maxDistance = distance * 6.0;
+  controls.update();
+
+  scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+  const keyLight = new THREE.DirectionalLight(0xffffff, 1.1);
+  keyLight.position.set(center.x + distance, center.y + distance * 1.2, center.z + distance * 0.6);
+  keyLight.castShadow = true;
+  scene.add(keyLight);
+  const fillLight = new THREE.DirectionalLight(0xffffff, 0.4);
+  fillLight.position.set(center.x - distance, center.y + distance * 0.4, center.z - distance * 0.8);
+  scene.add(fillLight);
+
+  // Static ground: a real object in the scene, not a re-rendered
+  // background — orbiting the camera around the character never moves it.
+  const ground = new THREE.Mesh(
+    new THREE.PlaneGeometry(groundSize, groundSize),
+    new THREE.MeshStandardMaterial({{color: 0xd7d9dd, roughness: 1.0}})
+  );
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.set(center.x, groundY, center.z);
+  ground.receiveShadow = true;
+  scene.add(ground);
+
+  const grid = new THREE.GridHelper(groundSize, 24, 0x9099a6, 0xbfc4cb);
+  grid.position.set(center.x, groundY + 0.002, center.z);
+  scene.add(grid);
+
+  const geometry = new THREE.BufferGeometry();
+  const posArray = new Float32Array(Math.max(nVerts * 3, 1));
+  if (nFrames > 0) {{ posArray.set(allVerts.subarray(0, nVerts * 3)); }}
+  const posAttr = new THREE.BufferAttribute(posArray, 3);
+  geometry.setAttribute("position", posAttr);
+  geometry.setIndex(new THREE.BufferAttribute(faces, 1));
+  geometry.computeVertexNormals();
+
+  const material = new THREE.MeshStandardMaterial({{color: {color_hex}, roughness: 0.55, metalness: 0.05}});
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.castShadow = true;
+  scene.add(mesh);
+
+  let idx = 0;
+  function showFrame(i) {{
+    if (nFrames <= 0) return;
+    idx = ((i % nFrames) + nFrames) % nFrames;
+    const offset = idx * nVerts * 3;
+    posAttr.array.set(allVerts.subarray(offset, offset + nVerts * 3));
+    posAttr.needsUpdate = true;
+    geometry.computeVertexNormals();
+    slider.value = idx;
+    label.textContent = (idx + 1) + " / " + nFrames;
+  }}
+
+  let timer = null;
+  function play() {{
+    if (timer !== null || nFrames <= 1) return;
+    playBtn.disabled = true;
+    pauseBtn.disabled = false;
+    timer = setInterval(function() {{
+      if (idx >= nFrames - 1) {{ pause(); return; }}
+      showFrame(idx + 1);
+    }}, interval);
+  }}
+  function pause() {{
+    if (timer !== null) {{ clearInterval(timer); timer = null; }}
+    playBtn.disabled = false;
+    pauseBtn.disabled = true;
+  }}
+
+  slider.addEventListener("input", function() {{ pause(); showFrame(parseInt(slider.value, 10)); }});
+  playBtn.addEventListener("click", play);
+  pauseBtn.addEventListener("click", pause);
+  resetBtn.addEventListener("click", function() {{
+    camera.position.copy(defaultCameraPos());
+    controls.target.copy(center);
+    controls.update();
+  }});
+  fullBtn.addEventListener("click", function() {{
+    if (!document.fullscreenElement) {{
+      (root.requestFullscreen || root.webkitRequestFullscreen || function(){{}}).call(root);
+    }} else {{
+      (document.exitFullscreen || document.webkitExitFullscreen || function(){{}}).call(document);
+    }}
+  }});
+
+  // The render loop runs continuously at the display's own rate so mouse
+  // orbiting stays smooth regardless of the mocap clip's fps — only
+  // `showFrame` (driven by the interval above) is paced to `fps`.
+  function animate() {{
+    requestAnimationFrame(animate);
+    controls.update();
+    renderer.render(scene, camera);
+  }}
+  animate();
+  showFrame(0);
+}})();
+</script>
+"""
