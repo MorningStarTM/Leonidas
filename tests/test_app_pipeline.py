@@ -77,6 +77,22 @@ def test_fit_frame_selection_handles_none_budget_as_no_limit():
     assert fit_fps == 60.0
 
 
+def test_subsample_for_fit_returns_step_for_temporal_weight_scaling():
+    """`step` must be exposed so callers can pass it to
+    `solver.scale_temporal_weights_for_subsampling` — without it, a
+    subsampled clip's genuine motion gets penalized by the smoothness
+    loss as if it were implausible jitter (see that function's docstring
+    for the real bug this fixes)."""
+    from app.pipeline import subsample_for_fit
+
+    points = np.zeros((100, 5, 3))
+    conf = np.ones((100, 5))
+    out_points, out_conf, fit_fps, step = subsample_for_fit(points, conf, fps=100.0, target_count=20)
+    assert out_points.shape[0] == 20
+    assert step == 5
+    assert fit_fps == 20.0
+
+
 @pytest.mark.skipif(not os.path.isfile(REAL_NPZ), reason="real npz sample not found")
 def test_process_upload_rejects_garbage_npz(smplx_body):
     import io

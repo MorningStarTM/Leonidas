@@ -27,7 +27,7 @@ import base64
 import numpy as np
 import pytest
 
-from app.render3d import build_mesh_player_html, plot_points_animation
+from app.render3d import build_mesh_player_html, build_mesh_player_threejs, plot_points_animation
 
 
 def _synthetic_points(t=6, k=5):
@@ -163,4 +163,96 @@ def test_mesh_player_slider_range_matches_frame_count():
 def test_mesh_player_handles_empty_frame_list_without_error():
     html = build_mesh_player_html([], fps=30.0, width=100, height=100)
     assert "const frames = []" in html
+    assert 'max="0"' in html
+
+
+# ---------------------------------------------------------------------------
+# build_mesh_player_threejs (interactive mouse-orbit viewer, SMPL-X fit tab)
+# ---------------------------------------------------------------------------
+def _cube_sequence(t=4):
+    """A tiny animated "mesh" (a cube translating upward each frame) — real
+    SMPL-X geometry isn't needed to test the HTML/JS structure this
+    function produces."""
+    base = np.array([
+        [-0.2, -0.2, 0.0], [0.2, -0.2, 0.0], [0.2, 0.2, 0.0], [-0.2, 0.2, 0.0],
+        [-0.2, -0.2, 0.4], [0.2, -0.2, 0.4], [0.2, 0.2, 0.4], [-0.2, 0.2, 0.4],
+    ], dtype=np.float64)
+    faces = np.array([
+        [0, 1, 2], [0, 2, 3], [4, 5, 6], [4, 6, 7],
+        [0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5],
+        [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7],
+    ], dtype=np.int64)
+    verts = np.stack([base + [0.0, 0.0, 0.1 * i] for i in range(t)])
+    return verts, faces
+
+
+def test_threejs_player_loads_three_and_orbit_controls():
+    verts, faces = _cube_sequence()
+    html = build_mesh_player_threejs(verts, faces, fps=30.0)
+    assert "three.min.js" in html
+    assert "OrbitControls.js" in html
+    assert "new THREE.OrbitControls" in html
+
+
+def test_threejs_player_has_static_ground_plane():
+    verts, faces = _cube_sequence()
+    html = build_mesh_player_threejs(verts, faces, fps=30.0)
+    assert "PlaneGeometry" in html
+    assert "GridHelper" in html
+    # The ground must be positioned once from precomputed bounds, not
+    # re-derived per frame — it should never move as frames advance.
+    assert "ground.position.set" in html
+
+
+def test_threejs_player_has_playback_and_view_controls():
+    verts, faces = _cube_sequence()
+    html = build_mesh_player_threejs(verts, faces, fps=24.0, width=300, height=300)
+    assert 'id="tjs-play"' in html
+    assert 'id="tjs-pause"' in html
+    assert 'id="tjs-slider"' in html
+    assert 'id="tjs-reset"' in html
+    assert 'id="tjs-full"' in html
+    assert "requestFullscreen" in html
+
+
+def test_threejs_player_embeds_all_frames_and_faces():
+    t = 5
+    verts, faces = _cube_sequence(t=t)
+    html = build_mesh_player_threejs(verts, faces, fps=30.0)
+    assert f"const nFrames = {t};" in html
+    assert f"const nVerts = {verts.shape[1]};" in html
+    # The base64-embedded vertex buffer must actually be present and decode
+    # back to the right total element count (t * n_verts * 3 float32s).
+    start = html.index('b64ToBuffer("') + len('b64ToBuffer("')
+    end = html.index('"', start)
+    decoded = base64.b64decode(html[start:end])
+    assert len(decoded) == t * verts.shape[1] * 3 * 4  # float32 = 4 bytes
+
+
+def test_threejs_player_converts_z_up_to_y_up_by_default():
+    """Vertices are Z-up in this project's convention; three.js is Y-up.
+    The embedded buffer must reflect the rotated (y-up) coordinates, not
+    the raw z-up input — checked by decoding the first frame back out."""
+    verts, faces = _cube_sequence(t=1)
+    html = build_mesh_player_threejs(verts, faces, fps=30.0, up_axis="z")
+    start = html.index('b64ToBuffer("') + len('b64ToBuffer("')
+    end = html.index('"', start)
+    decoded = np.frombuffer(base64.b64decode(html[start:end]), dtype=np.float32).reshape(-1, 3)
+    # Original z-up cube spans z in [0.0, 0.4] and y in [-0.2, 0.2]; after
+    # rotating to y-up, that span must show up on the new y axis instead.
+    assert decoded[:, 1].max() - decoded[:, 1].min() > 0.35
+    assert decoded[:, 2].max() - decoded[:, 2].min() < 0.41
+
+
+def test_threejs_player_rejects_bad_up_axis():
+    verts, faces = _cube_sequence()
+    with pytest.raises(ValueError):
+        build_mesh_player_threejs(verts, faces, fps=30.0, up_axis="x")
+
+
+def test_threejs_player_handles_empty_sequence_without_error():
+    verts = np.zeros((0, 8, 3))
+    faces = np.array([[0, 1, 2]], dtype=np.int64)
+    html = build_mesh_player_threejs(verts, faces, fps=30.0)
+    assert "const nFrames = 0;" in html
     assert 'max="0"' in html

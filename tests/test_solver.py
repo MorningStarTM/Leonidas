@@ -2,7 +2,7 @@ import numpy as np
 import torch
 
 from src.smplx.fitting.body import BodyParams
-from src.smplx.fitting.solver import fit_observation
+from src.smplx.fitting.solver import DEFAULT_STAGES, fit_observation, scale_temporal_weights_for_subsampling
 from src.smplx.layouts import get_layout
 from src.smplx.schema import Observation
 
@@ -154,3 +154,37 @@ def test_rejects_2d_observation():
     )
     with pytest.raises(ValueError):
         fit_observation(obs, None, layout)
+
+
+def test_scale_temporal_weights_for_subsampling_is_noop_at_step_one():
+    scaled = scale_temporal_weights_for_subsampling(DEFAULT_STAGES, step=1)
+    for orig, s in zip(DEFAULT_STAGES, scaled):
+        assert s.w_smooth == orig.w_smooth
+        assert s.w_accel == orig.w_accel
+
+
+def test_scale_temporal_weights_for_subsampling_scales_correctly():
+    """First-difference (velocity-like) terms should scale by 1/step;
+    second-difference (acceleration-like) terms by 1/step**2 — see the
+    function's docstring for why. Everything else must stay untouched."""
+    step = 4
+    scaled = scale_temporal_weights_for_subsampling(DEFAULT_STAGES, step)
+    for orig, s in zip(DEFAULT_STAGES, scaled):
+        assert s.w_smooth == orig.w_smooth / step
+        assert s.w_accel == orig.w_accel / (step ** 2)
+        # unrelated fields must be preserved exactly
+        assert s.name == orig.name
+        assert s.optimize == orig.optimize
+        assert s.iters == orig.iters
+        assert s.w_data == orig.w_data
+        assert s.w_prior == orig.w_prior
+        assert s.w_limits == orig.w_limits
+        assert s.w_shape == orig.w_shape
+        assert s.torso_only == orig.torso_only
+
+
+def test_scale_temporal_weights_does_not_mutate_original_stages():
+    before = [(s.w_smooth, s.w_accel) for s in DEFAULT_STAGES]
+    scale_temporal_weights_for_subsampling(DEFAULT_STAGES, step=5)
+    after = [(s.w_smooth, s.w_accel) for s in DEFAULT_STAGES]
+    assert before == after
