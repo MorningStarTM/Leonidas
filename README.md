@@ -82,15 +82,7 @@ Notes:
 - Tests that need the SMPL-X model skip automatically if it is not found.
 - Some tests use sample mocap and video files at local paths on the author's machine and skip if those files are missing.
 
-## Deploying the app
 
-The app runs on [Streamlit Community Cloud](https://share.streamlit.io) (not Vercel, which cannot host a long-running Streamlit server). Since the model file cannot be committed, host your own copy privately on Google Drive (shared as "Anyone with the link") and add this to the app's Secrets:
-
-```toml
-SMPLX_MODEL_DRIVE_ID = "<google-drive-file-id>"
-```
-
-On first boot the app downloads the model into `src/model/`. `packages.txt` installs the system libraries OpenCV and MediaPipe need.
 
 ## License
 
