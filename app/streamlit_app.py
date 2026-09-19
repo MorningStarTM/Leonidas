@@ -13,6 +13,7 @@ Run with:  streamlit run app/streamlit_app.py
 """
 from __future__ import annotations
 
+import inspect
 import sys
 from pathlib import Path
 
@@ -60,6 +61,24 @@ def cached_mesh_player_html(vertices_bytes, faces_bytes, shape, fps, width, heig
     return build_mesh_player_threejs(all_vertices, faces, fps=fps, width=width, height=height)
 
 
+def _plotly_chart_full_width(fig, key):
+    # Newer Streamlit replaced `use_container_width` with `width="stretch"`;
+    # older versions only know the former. Pick by signature, not by version.
+    if "width" in inspect.signature(st.plotly_chart).parameters:
+        st.plotly_chart(fig, width="stretch", key=key)
+    else:
+        st.plotly_chart(fig, use_container_width=True, key=key)
+
+
+def _show_html(html: str, height: int):
+    # `st.components.v1.html` is deprecated in favor of `st.iframe`, which
+    # takes a raw HTML string directly. Fall back for older Streamlit.
+    if hasattr(st, "iframe"):
+        st.iframe(html.strip(), height=height)
+    else:
+        st.components.v1.html(html, height=height, scrolling=False)
+
+
 def render_raw_tab(raw):
     st.subheader("Raw Mocap — as measured by the source format")
     for note in raw.notes:
@@ -76,7 +95,7 @@ def render_raw_tab(raw):
     # does not run again while it plays, which is what keeps the page
     # scrollable and its native "view fullscreen" control responsive
     # during playback (see plot_points_animation's docstring).
-    st.plotly_chart(fig, use_container_width=True, key=f"raw_plot_{id(raw)}")
+    _plotly_chart_full_width(fig, key=f"raw_plot_{id(raw)}")
 
     n_unobserved = int((raw.conf <= 0).sum())
     if n_unobserved:
@@ -133,7 +152,7 @@ def render_fit_tab(fit, body):
         all_vertices.tobytes(), faces.tobytes(), all_vertices.shape,
         float(fit.motion.fps), int(width), int(height),
     )
-    st.components.v1.html(html, height=height + 110, scrolling=False)
+    _show_html(html, height=height + 110)
 
 
 def main():
