@@ -146,6 +146,44 @@ solver (`mediapipe_33` layout) — this sidesteps needing the (unavailable,
 see above) trained regressor checkpoint entirely, since MediaPipe already
 provides genuine metric 3D pose.
 
+**MediaPipe's axis convention** (`video_extract.py::_mediapipe_world_to_zup`):
+`pose_world_landmarks` use the same Y-down convention as raw image pixels
+(rescaled to meters), not this project's Z-up standard — confirmed against
+three independent real videos, not assumed. Left uncorrected, this both
+makes the raw skeleton view look tipped onto its side and feeds
+wrongly-oriented data into the solver. The fix is a 180-degree rotation
+about X (not a single-axis sign flip, which would silently mirror left/
+right — a determinant -1 reflection, not a rotation), applied once, right
+after extraction, before anything else touches the coordinates.
+
+**Fitting hard, wide-motion-range video is a known, disclosed limitation,
+not silently hidden.** A single shared body shape (`betas`) is estimated
+across every fitted frame; when those frames span a large real range of
+motion under real occlusion (e.g. a full barbell squat set, camera behind
+a rack, hands gripping a bar behind the neck), the noisier frames can pull
+the shared shape estimate off in a way that degrades the fit for every
+frame, not just the hard ones — confirmed directly against a real gym
+video (a narrow 8-frame standing-only window fit at ~44mm RMSE /
+`DEGRADED`; the same clip's full squat range fit at 230mm+ / `REJECT`,
+even with more LBFGS iterations, a tighter robust-loss radius, and
+temporal-smoothness fully disabled — ruling out those as the cause).
+`FitQuality` correctly reports `REJECT` for that case rather than a
+falsely reassuring `GOOD`; a proper fix (e.g. not sharing betas so
+rigidly, or fitting overlapping windows) is a real, separate piece of
+future work, not something papered over here.
+
+A real, generalizable bug *was* found and fixed along the way:
+`temporal_smoothness`/`translation_acceleration` (fitting/losses.py) compute
+plain frame-to-frame differences with no notion of elapsed real time, so a
+heavily-subsampled clip (`app/pipeline.py::subsample_for_fit`, used by
+every Tier-1/2 format when a clip exceeds the fit-frame budget) had its
+genuine motion penalized as if it were implausible jitter, scaled up by
+however many real frames were skipped between samples.
+`solver.scale_temporal_weights_for_subsampling` corrects for this (1/step
+for the first-difference term, 1/step**2 for the second-difference term),
+applied everywhere `subsample_for_fit` is used — a no-op when nothing was
+subsampled.
+
 C3D and BVH fits are only as good as how well the uploaded file's marker/
 joint placements match the specific protocol our correspondence tables were
 derived from — a file using the same marker *names* but a different lab's

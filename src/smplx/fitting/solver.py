@@ -58,6 +58,41 @@ class StageSpec:
     torso_only: bool = False
 
 
+def scale_temporal_weights_for_subsampling(stages: List[StageSpec], step: int) -> List[StageSpec]:
+    """Return a copy of `stages` with temporal-smoothness/acceleration
+    weights scaled down for evenly-subsampled input (see
+    `app/pipeline.py::_fit_frame_selection` — a clip longer than the fit
+    frame budget is sampled every `step` real frames, not truncated).
+
+    `temporal_smoothness`/`translation_acceleration` (losses.py) compute
+    plain frame-to-frame differences with no notion of how much real time
+    separates two samples. When `step > 1`, "consecutive" samples are
+    `step` real frames apart, so genuine motion between them is naturally
+    `step` times larger per first-difference term (velocity-like) and
+    roughly `step**2` times larger per second-difference term
+    (acceleration-like, from naive discrete differencing). Left
+    unscaled, the same fixed weight then over-penalizes real fast motion
+    in a heavily-subsampled clip as if it were implausible jitter —
+    confirmed directly: fitting a real gym squat video's full range of
+    motion (subsampled 6x) measured *worse* (234.9mm RMSE) than fitting a
+    narrower, less-subsampled window (43-50mm), even though the former
+    used more, not less, of the source data. Scaling these two weights by
+    1/step and 1/step**2 respectively restores a roughly constant
+    per-unit-of-real-time penalty regardless of the subsampling rate.
+    """
+    if step <= 1:
+        return list(stages)
+    scaled = []
+    for s in stages:
+        scaled.append(StageSpec(
+            name=s.name, optimize=s.optimize, iters=s.iters, w_data=s.w_data,
+            w_prior=s.w_prior, w_limits=s.w_limits, w_shape=s.w_shape,
+            w_smooth=s.w_smooth / step, w_accel=s.w_accel / (step ** 2),
+            torso_only=s.torso_only,
+        ))
+    return scaled
+
+
 DEFAULT_STAGES: List[StageSpec] = [
     StageSpec("global_only", ["global"], iters=50, w_data=1.0, w_prior=0.05, w_limits=0.0, w_shape=0.0, torso_only=True),
     StageSpec("shape", ["global", "betas"], iters=50, w_data=1.0, w_prior=0.3, w_limits=0.1, w_shape=1.0, torso_only=True),
