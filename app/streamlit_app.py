@@ -141,7 +141,13 @@ def main():
     st.caption("Upload mocap data (.npz SMPL/SMPL-H/SMPL-X params, .c3d optical markers, .bvh skeleton animation, "
                "or a video) to compare it raw against a unified SMPL-X fit.")
 
-    ensure_smplx_model_downloaded()
+    try:
+        with st.spinner("Checking for SMPL-X model..."):
+            bootstrap_status = ensure_smplx_model_downloaded()
+    except Exception as e:
+        st.error(f"SMPL-X model download failed: {e}")
+        st.stop()
+
     model_path = find_smplx_model()
     if model_path is None:
         st.error(
@@ -149,6 +155,7 @@ def main():
             "to a SMPLX_*.npz file (registration-gated, see https://smpl-x.is.tue.mpg.de) "
             "before running this app."
         )
+        st.caption(f"Bootstrap: {bootstrap_status}")
         st.stop()
     st.sidebar.success(f"SMPL-X model: {model_path.name}")
 
