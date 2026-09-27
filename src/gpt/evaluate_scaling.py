@@ -33,6 +33,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import copy
 import glob
 import json
 from pathlib import Path
@@ -112,7 +113,16 @@ def _load_checkpoint(path: Path, device: torch.device):
 
 
 def evaluate_run(run_dir: Path, body: SMPLXBody, device: torch.device,
-                  batch_size: int = 16, max_windows: Optional[int] = 200) -> Dict[str, Any]:
+                  batch_size: int = 16, max_windows: Optional[int] = 200,
+                  data_dir: Optional[str] = None) -> Dict[str, Any]:
+    """`data_dir`: override the `data.dir` each run's own saved config
+    points at. Needed whenever evaluation runs somewhere other than where
+    training ran — most commonly training on Kaggle (`data.dir=/kaggle/
+    input/...`) and evaluating on a different machine after downloading
+    the run folders, where that path doesn't exist. Point it at a local
+    copy of the *same* dataset; the validation split is reproduced from
+    the run's own seed and file ordering, so it only matches if the file
+    set is the same."""
     results_path, ckpt_path = run_dir / "results.json", run_dir / "best.pt"
     if not results_path.is_file():
         raise FileNotFoundError(f"{results_path} not found — is this a finished run directory?")
@@ -121,6 +131,9 @@ def evaluate_run(run_dir: Path, body: SMPLXBody, device: torch.device,
 
     results = json.loads(results_path.read_text())
     model, cfg, mean, std = _load_checkpoint(ckpt_path, device)
+    if data_dir:
+        cfg = copy.deepcopy(cfg)
+        cfg["data"]["dir"] = data_dir
     _train_c, val_c, _info = build_corpora(cfg)  # same seed + data.dir -> the same split used in training
     mpjpe_mm, n_eval = compute_mpjpe_mm(model, val_c, mean, std, body, device, batch_size, max_windows)
 
@@ -202,6 +215,9 @@ def main(argv: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     ap.add_argument("--out_dir", default="scaling_report")
     ap.add_argument("--max_windows", type=int, default=200, help="validation windows per run; 0 = use all of them")
     ap.add_argument("--batch_size", type=int, default=16)
+    ap.add_argument("--data_dir", default=None,
+                    help="override the data.dir saved in each run's config, e.g. when evaluating "
+                         "on a machine other than where training ran (see evaluate_run's docstring)")
     args = ap.parse_args(argv)
 
     expanded: List[Path] = []
@@ -217,7 +233,7 @@ def main(argv: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     rows = []
     for run_dir in expanded:
         print(f"[eval] {run_dir}")
-        rows.append(evaluate_run(run_dir, body, device, args.batch_size, args.max_windows or None))
+        rows.append(evaluate_run(run_dir, body, device, args.batch_size, args.max_windows or None, args.data_dir))
         print(f"       {rows[-1]['n_params_millions']:.2f}M params -> MPJPE {rows[-1]['mpjpe_mm']:.1f} mm")
 
     out_dir = Path(args.out_dir)
