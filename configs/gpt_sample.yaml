@@ -1,0 +1,53 @@
+# Sample config for src/gpt/train.py. Copy it, change the values, run:
+#   python -m src.gpt.train --config configs/gpt_sample.yaml
+# Any value can also be overridden on the command line:
+#   --set run.name=gpt_m model.n_embd=384 model.n_head=8 model.n_layers=8
+# Unknown keys raise an error, so typos are caught immediately.
+
+run:
+  name: gpt_s                      # output folder name, also written into results.json
+  output_dir: runs                 # Kaggle: /kaggle/working/runs
+  seed: 42
+  resume_from: null                # path to a last.pt from an earlier session to continue training
+  max_train_minutes: 0             # stop cleanly (and save) after this many minutes; 0 = no limit
+                                   # Kaggle sessions last at most 12 h, so use about 690 there
+  device: auto                     # auto = GPU if available, otherwise CPU
+
+data:
+  dir: /kaggle/input/YOUR_DATASET  # folder searched recursively for .npz clips
+  target_fps: 30.0                 # clips at another frame rate are resampled to this
+  val_fraction: 0.05               # share of clips held out for validation (split by clip)
+  allowed_verdicts: [GOOD, DEGRADED]   # MotionPrep quality verdicts to keep; [] keeps everything
+  use_part_mask: true              # ignore parts that were never observed (for example hands at rest)
+  max_clips: null                  # set a small number (like 20) for a quick test run
+
+# Model size. Parameter counts below were measured with --count_params:
+#   xs  n_embd=128  n_head=4   n_layers=4    ->  0.89M
+#   s   n_embd=256  n_head=8   n_layers=6    ->  4.93M
+#   m   n_embd=384  n_head=8   n_layers=8    -> 14.48M
+#   l   n_embd=512  n_head=8   n_layers=12   -> 38.20M
+#   xl  n_embd=768  n_head=12  n_layers=12   -> 85.61M
+# n_embd must be divisible by n_head.
+model:
+  n_embd: 256
+  n_head: 8
+  n_layers: 6
+  dropout: 0.1
+  block_size: 128                  # context length in frames (128 frames = 4.3 s at 30 fps)
+
+train:
+  batch_size: 64                   # windows per step
+  grad_accum_steps: 1              # raise this instead of batch_size if the GPU runs out of memory
+  max_steps: 20000                 # total optimizer steps (each step sees batch_size x grad_accum_steps x block_size frames)
+  learning_rate: 3.0e-4            # larger models usually want a smaller value (about 1e-4 for 40M+)
+  min_lr_ratio: 0.1                # cosine schedule decays to learning_rate x this
+  warmup_steps: 500
+  weight_decay: 0.1
+  adam_betas: [0.9, 0.95]
+  grad_clip_norm: 1.0
+  amp: fp16                        # fp16 for Kaggle T4/P100, bf16 for A100/H100, none to disable
+  eval_every: 500                  # steps between validation runs (best.pt is saved when it improves)
+  eval_batches: 50                 # validation batches per run; 0 = the whole validation set
+  save_every: 1000                 # steps between last.pt saves (used for resuming)
+  log_every: 50
+  patience_evals: 0                # stop after this many validations without improvement; 0 = off
