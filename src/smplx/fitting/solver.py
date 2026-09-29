@@ -93,6 +93,31 @@ def scale_temporal_weights_for_subsampling(stages: List[StageSpec], step: int) -
     return scaled
 
 
+def freeze_betas(stages: List[StageSpec]) -> List[StageSpec]:
+    """Return a copy of `stages` with "betas" removed from every stage's
+    `optimize` list, for use with `fit_observation(..., frozen_betas=...)`.
+
+    Why this exists: the default schedule shares one betas estimate across
+    every frame of a clip, fit jointly with the rest. For video with a wide
+    range of motion and real occlusion, the noisier frames pull that one
+    shared shape estimate off for every frame, not just the hard ones —
+    confirmed on a real gym video: a narrow, mostly-unoccluded window fit at
+    ~44mm RMSE, the same clip's full squat range fit at 230mm+, even with
+    more iterations and a tighter robust-loss radius. The fix used by
+    `app/pipeline.py::process_video` is to estimate betas once from a
+    short, least-occluded calibration window (see
+    `select_shape_calibration_frames`), then fit the *rest* of the clip
+    with that shape frozen — only global pose and body pose are solved per
+    frame at that point, which is what this function's stages produce.
+    """
+    return [
+        StageSpec(name=s.name, optimize=[o for o in s.optimize if o != "betas"],
+                  iters=s.iters, w_data=s.w_data, w_prior=s.w_prior, w_limits=s.w_limits,
+                  w_shape=s.w_shape, w_smooth=s.w_smooth, w_accel=s.w_accel, torso_only=s.torso_only)
+        for s in stages
+    ]
+
+
 DEFAULT_STAGES: List[StageSpec] = [
     StageSpec("global_only", ["global"], iters=50, w_data=1.0, w_prior=0.05, w_limits=0.0, w_shape=0.0, torso_only=True),
     StageSpec("shape", ["global", "betas"], iters=50, w_data=1.0, w_prior=0.3, w_limits=0.1, w_shape=1.0, torso_only=True),
@@ -220,8 +245,16 @@ def fit_observation(
     layout: MotionLayout,
     prior: Optional[PosePrior] = None,
     config: Optional[SolverConfig] = None,
+    frozen_betas: Optional[np.ndarray] = None,
 ) -> "tuple[CanonicalMotion, FitQuality]":
     """Fit a 3D Observation to SMPL-X via staged optimization.
+
+    `frozen_betas`: if given, betas is initialized from this value and
+    never optimized — "betas" is stripped from every stage's `optimize`
+    list automatically (via `freeze_betas`), regardless of what
+    `config.stages` says, so a caller can't accidentally still optimize it.
+    Use this when a good shape estimate already exists from elsewhere (see
+    `freeze_betas`'s docstring for why this matters for video).
 
     Returns (CanonicalMotion, FitQuality). Raises ValueError if the
     observation is not 3D — 2D/video input goes through Method 3
@@ -265,8 +298,12 @@ def fit_observation(
         neutral_points, points_np, conf_np, corr_weights
     )
 
+    betas_init = (
+        torch.tensor(np.asarray(frozen_betas, dtype=np.float64), device=device, dtype=dtype)
+        if frozen_betas is not None else torch.zeros(NUM_BETAS, device=device, dtype=dtype)
+    )
     params = BodyParams(
-        betas=torch.zeros(NUM_BETAS, device=device, dtype=dtype),
+        betas=betas_init,
         global_orient=torch.tensor(init_orient, device=device, dtype=dtype),
         body_pose=torch.zeros(t, 63, device=device, dtype=dtype),
         left_hand_pose=torch.zeros(t, 45, device=device, dtype=dtype),
@@ -289,7 +326,8 @@ def fit_observation(
         for p in plist:
             p.requires_grad_(False)
 
-    for stage in cfg.stages:
+    stages = freeze_betas(cfg.stages) if frozen_betas is not None else cfg.stages
+    for stage in stages:
         variables = [p for key in stage.optimize for p in all_params[key]]
         for p in variables:
             p.requires_grad_(True)
